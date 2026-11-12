@@ -40,11 +40,18 @@ async function askPage(clientId, start, end) {
 function download(event, token, size, mode) {
   let position = 0;
   let nextReport = REPORT_EVERY;
+  // Set when the browser stops reading: a piece that was being fetched then must not be enqueued any more
+  let cancelled = false;
   const startedAt = Date.now();
   const report = (state, extra) => tellPages({ type: 'dl', token, state, position, size, mode, elapsedMs: Date.now() - startedAt, ...extra });
   const body = new ReadableStream({
     start() {
-      report('start', { clientId: event.clientId || '', resultingClientId: event.resultingClientId || '' });
+      report('start', {
+        clientId: event.clientId || '',
+        resultingClientId: event.resultingClientId || '',
+        destination: event.request.destination || '(empty)',
+        requestMode: event.request.mode,
+      });
     },
     async pull(controller) {
       try {
@@ -55,6 +62,7 @@ function download(event, token, size, mode) {
         }
         const end = Math.min(size, position + PIECE);
         const bytes = mode === 'page' ? await askPage(event.clientId, position, end) : self.L0Gen.range(position, end);
+        if (cancelled) return;
         if (bytes.length !== end - position) throw new Error(`piece of ${bytes.length} bytes, expected ${end - position}`);
         controller.enqueue(bytes);
         position = end;
@@ -63,12 +71,14 @@ function download(event, token, size, mode) {
           report('progress');
         }
       } catch (error) {
+        if (cancelled) return;
         report('error', { message: error instanceof Error ? error.message : String(error) });
         controller.error(error);
       }
     },
-    cancel() {
-      report('cancel');
+    cancel(reason) {
+      cancelled = true;
+      report('cancel', { message: reason === undefined ? '(no reason given)' : String(reason) });
     },
   });
   return new Response(body, {

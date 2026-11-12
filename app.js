@@ -279,7 +279,10 @@ function onWorkerMessage(event) {
   downloads.set(data.token, seen);
   const where = `${mib(data.position)} / ${mib(data.size)}`;
   if (data.state === 'start') {
-    log(`e.start token=${data.token} mode=${data.mode} size=${data.size} hasClientId=${data.clientId !== ''} hasResultingClientId=${data.resultingClientId !== ''}`);
+    log(
+      `e.start token=${data.token} mode=${data.mode} size=${data.size} hasClientId=${data.clientId !== ''} hasResultingClientId=${data.resultingClientId !== ''} ` +
+        `destination=${data.destination} requestMode=${data.requestMode}`,
+    );
     status('dlStatus', `開始:${mib(data.size)}`);
   } else if (data.state === 'progress') {
     status('dlStatus', `瀏覽器已讀取 ${where},${rate(data.position, data.elapsedMs)}`);
@@ -326,8 +329,134 @@ $('dlLink').addEventListener('click', () => {
   setTimeout(refreshDownloadLink, 1000);
 });
 document.addEventListener('visibilitychange', () => log(`page visibility=${document.visibilityState}`));
+// A link that turns into a navigation takes the page away; these two show whether it came back from the back/forward cache
+addEventListener('pagehide', (event) => log(`pagehide persisted=${event.persisted}`));
+addEventListener('pageshow', (event) => log(`pageshow persisted=${event.persisted}`));
 refreshDownloadLink();
 setUpServiceWorker();
+
+// Method B: the same download URL in a hidden frame, so this page is never navigated away
+let downloadFrame = null;
+$('dlFrame').addEventListener('click', () => {
+  refreshDownloadLink();
+  const url = $('dlLink').href;
+  log(`e.frame size=${$('dlSize').value} mode=${$('dlMode').value}`);
+  if (downloadFrame !== null) downloadFrame.remove();
+  downloadFrame = document.createElement('iframe');
+  downloadFrame.hidden = true;
+  downloadFrame.addEventListener('load', () => log('e.frame load event (the frame showed a document instead of downloading)'));
+  downloadFrame.src = url;
+  document.body.append(downloadFrame);
+  refreshDownloadLink();
+});
+
+// Method C: write the content into the origin private file system first (piece by piece, as a decrypting page would), then
+// hand the finished file to the system: the share sheet, or a download link to a blob URL of that file. The file is on
+// disk, so neither step needs the content in memory.
+let stagedUrl = null;
+let stagedFile = null;
+
+function clearStaged() {
+  if (stagedUrl !== null) URL.revokeObjectURL(stagedUrl);
+  stagedUrl = null;
+  stagedFile = null;
+  $('stageShare').disabled = true;
+  $('stageLink').removeAttribute('href');
+  $('stageLink').setAttribute('aria-disabled', 'true');
+}
+
+action('stageWrite', 'stageStatus', async () => {
+  if (!features.opfs) {
+    status('stageStatus', '這個瀏覽器沒有內部儲存空間的 API');
+    return;
+  }
+  clearStaged();
+  const size = Number($('dlSize').value);
+  const name = `l0-dl-${size}.bin`;
+  const estimate = await navigator.storage.estimate();
+  log(`e.stage start size=${size} quota=${mib(estimate.quota ?? 0)} usage=${mib(estimate.usage ?? 0)}`);
+  const directory = await navigator.storage.getDirectory();
+  const handle = await directory.getFileHandle(name, { create: true });
+  if (typeof handle.createWritable !== 'function') throw new Error('createWritable is not available on this browser');
+  const writable = await handle.createWritable();
+  const started = performance.now();
+  let writeMs = 0;
+  let nextLog = 256 * MIB;
+  try {
+    for (let position = 0; position < size; ) {
+      const end = Math.min(size, position + PIECE);
+      const bytes = gen.range(position, end);
+      const before = performance.now();
+      await writable.write(bytes);
+      writeMs += performance.now() - before;
+      position = end;
+      status('stageStatus', `寫入 ${mib(position)} / ${mib(size)}`);
+      if (position >= nextLog) {
+        nextLog += 256 * MIB;
+        log(`e.stage at=${mib(position)} elapsed=${seconds(performance.now() - started)} write=${seconds(writeMs)}${heap()}`);
+      }
+    }
+  } catch (error) {
+    await writable.abort().catch(() => undefined);
+    await directory.removeEntry(name).catch(() => undefined);
+    throw error;
+  }
+  const beforeClose = performance.now();
+  await writable.close();
+  const closeMs = performance.now() - beforeClose;
+  const onDisk = await handle.getFile();
+  // Wrapping does not copy: the new File refers to the one on disk
+  stagedFile = new File([onDisk], name, { type: 'application/octet-stream' });
+  stagedUrl = URL.createObjectURL(stagedFile);
+  $('stageLink').href = stagedUrl;
+  $('stageLink').download = name;
+  $('stageLink').removeAttribute('aria-disabled');
+  const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [stagedFile] });
+  $('stageShare').disabled = !canShare;
+  log(`e.stage written size=${onDisk.size} sizeOk=${onDisk.size === size} write=${seconds(writeMs)} (${rate(size, writeMs)}) close=${seconds(closeMs)} canShareFiles=${canShare}`);
+  status('stageStatus', `已寫入 ${mib(size)}(${seconds(writeMs)})。接著按「分享 / 儲存到檔案」或「用下載連結儲存」`);
+});
+
+// Called straight from the tap, with nothing awaited before it: the share sheet needs the user's gesture
+$('stageShare').addEventListener('click', () => {
+  if (stagedFile === null) return;
+  log(`e.stage share size=${stagedFile.size}`);
+  navigator.share({ files: [stagedFile] }).then(
+    () => {
+      log('e.stage share resolved (the sheet was completed)');
+      status('stageStatus', '分享完成');
+    },
+    (error) => {
+      log(`e.stage share rejected: ${describeError(error)}`);
+      status('stageStatus', `分享沒有完成:${describeError(error)}`);
+    },
+  );
+});
+
+$('stageLink').addEventListener('click', (event) => {
+  if (stagedUrl === null) {
+    event.preventDefault();
+    return;
+  }
+  log(`e.stage link click size=${stagedFile.size}`);
+});
+
+action('stageRemove', 'stageStatus', async () => {
+  clearStaged();
+  const directory = await navigator.storage.getDirectory();
+  let removed = 0;
+  for (const option of $('dlSize').options) {
+    try {
+      await directory.removeEntry(`l0-dl-${option.value}.bin`);
+      removed++;
+    } catch {
+      // Not there: nothing to remove
+    }
+  }
+  const estimate = await navigator.storage.estimate();
+  log(`e.stage removed files=${removed} usage=${mib(estimate.usage ?? 0)}`);
+  status('stageStatus', `已刪除 ${removed} 個暫存檔`);
+});
 
 // ───────────────────────── g. Piece-by-piece writes to a local folder ─────────────────────────
 
