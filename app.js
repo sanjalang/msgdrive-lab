@@ -546,6 +546,95 @@ action('stageRemove', 'stageStatus', async () => {
   status('stageStatus', `已刪除 ${removed} 個暫存檔;剩下 ${left.count} 個項目,瀏覽器回報這個網站已用 ${mib(left.usage)}`);
 });
 
+// Ways of writing the staged file. On an iPhone the usage that the browser reports grew by 8320 MiB after one 256 MiB file
+// written in 4 MiB pieces: exactly 4 + 8 + … + 256, as if every write were charged the whole file so far. This writes the
+// same 256 MiB in several ways and logs the reported usage around each, to find a way that is charged what it writes.
+const METHOD_SIZE = 256 * MIB;
+
+async function storageNow() {
+  const estimate = await navigator.storage.estimate();
+  return { usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 };
+}
+
+async function writeThroughWritable(handle, size, piece, truncateFirst) {
+  const writable = await handle.createWritable();
+  try {
+    // With the size set first, no later write makes the file longer
+    if (truncateFirst) await writable.truncate(size);
+    for (let position = 0; position < size; ) {
+      const end = Math.min(size, position + piece);
+      await writable.write(gen.range(position, end));
+      position = end;
+    }
+  } catch (error) {
+    await writable.abort().catch(() => undefined);
+    throw error;
+  }
+  await writable.close();
+}
+
+function writeInWorker(name, size, piece) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker('stage-worker.js');
+    worker.onmessage = (event) => {
+      worker.terminate();
+      if (event.data.ok) resolve();
+      else reject(new Error(event.data.message));
+    };
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(event.message || 'the worker failed to start'));
+    };
+    worker.postMessage({ name, size, piece });
+  });
+}
+
+const WRITE_METHODS = [
+  { id: 'writable-4MiB', run: (handle) => writeThroughWritable(handle, METHOD_SIZE, 4 * MIB, false) },
+  { id: 'writable-16MiB', run: (handle) => writeThroughWritable(handle, METHOD_SIZE, 16 * MIB, false) },
+  { id: 'writable-size-first-4MiB', run: (handle) => writeThroughWritable(handle, METHOD_SIZE, 4 * MIB, true) },
+  { id: 'worker-sync-handle-4MiB', run: (_handle, name) => writeInWorker(name, METHOD_SIZE, 4 * MIB) },
+];
+
+action('stageCompare', 'stageStatus', async () => {
+  if (!features.opfs) {
+    status('stageStatus', '這個瀏覽器沒有內部儲存空間的 API');
+    return;
+  }
+  const directory = await navigator.storage.getDirectory();
+  const first = await storageNow();
+  log(`e.method start size=${METHOD_SIZE} usage=${mib(first.usage)} quota=${mib(first.quota)}`);
+  for (const [index, method] of WRITE_METHODS.entries()) {
+    const name = `l0-method-${index}.bin`;
+    status('stageStatus', `寫入方式 ${index + 1} / ${WRITE_METHODS.length}:${method.id}`);
+    await directory.removeEntry(name).catch(() => undefined);
+    const before = await storageNow();
+    const started = performance.now();
+    let outcome;
+    try {
+      const handle = await directory.getFileHandle(name, { create: true });
+      await method.run(handle, name);
+      const size = (await handle.getFile()).size;
+      outcome = `sizeOk=${size === METHOD_SIZE}`;
+    } catch (error) {
+      outcome = `ERROR ${describeError(error)}`;
+    }
+    const ms = performance.now() - started;
+    const after = await storageNow();
+    await directory.removeEntry(name).catch(() => undefined);
+    const removed = await storageNow();
+    log(
+      `e.method name=${method.id} ${outcome} time=${seconds(ms)} before=${mib(before.usage)} after=${mib(after.usage)} ` +
+        `added=${mib(after.usage - before.usage)} afterRemove=${mib(removed.usage)} quota=${mib(removed.quota)}`,
+    );
+  }
+  // The reported figure may lag: read it once more a little later
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const last = await storageNow();
+  log(`e.method end usage=${mib(last.usage)} quota=${mib(last.quota)}`);
+  status('stageStatus', `寫入方式比較完成;瀏覽器回報這個網站已用 ${mib(last.usage)}`);
+});
+
 // ───────────────────────── g. Piece-by-piece writes to a local folder ─────────────────────────
 
 async function writeTest(directory, where) {
