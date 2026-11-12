@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>MsgDrive L0 實驗 c / e / f / g</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0 auto;
+        padding: 12px 16px 48px;
+        max-width: 760px;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.2rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+        margin: 28px 0 6px;
+        padding-top: 12px;
+        border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+      }
+      p {
+        margin: 6px 0;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0;
+      }
+      button,
+      select,
+      input[type='file'],
+      a.button {
+        font: inherit;
+        padding: 8px 12px;
+        min-height: 40px;
+        box-sizing: border-box;
+      }
+      a.button {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid currentColor;
+        border-radius: 6px;
+        text-decoration: none;
+        color: inherit;
+      }
+      .status {
+        font-variant-numeric: tabular-nums;
+        min-height: 1.5em;
+      }
+      .note {
+        font-size: 0.9rem;
+        opacity: 0.8;
+      }
+      #log {
+        white-space: pre-wrap;
+        word-break: break-all;
+        font: 12px/1.45 ui-monospace, Consolas, monospace;
+        border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+        border-radius: 6px;
+        padding: 8px;
+        max-height: 50vh;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>MsgDrive L0 實驗:雜湊、下載、選檔、本機寫入</h1>
+    <p class="note">這一頁只用程式產生的假資料(虛構資料)與你自己選的檔案;檔案不會離開這台裝置,紀錄裡不含檔名。做完後按最下面的「複製測試紀錄」。</p>
+    <p class="status" id="env"></p>
+
+    <h2>c. 分段 SHA-256(純 JavaScript)</h2>
+    <div class="row">
+      <button id="hashCheck">1. 正確性</button>
+      <select id="hashSize" aria-label="資料大小">
+        <option value="268435456">256 MiB</option>
+        <option value="1073741824">1 GiB</option>
+        <option value="4831838208">4.5 GiB</option>
+      </select>
+      <button id="hashWorker">2. Worker 裡算</button>
+      <button id="hashMain">3. 主執行緒算</button>
+      <button id="hashNative">4. WebCrypto 對照(64 MiB)</button>
+    </div>
+    <p class="status" id="hashStatus"></p>
+
+    <h2>f. 選一個大檔案,分段讀取並算雜湊</h2>
+    <p class="note">iPhone:選 1 GiB 以上的影片。從「照片」選和從「檔案」選各做一次(照片會先轉存一份,等待時間也是觀察重點)。</p>
+    <div class="row">
+      <input type="file" id="filePick" />
+      <select id="filePiece" aria-label="每次讀取的大小">
+        <option value="1048576">每次 1 MiB</option>
+        <option value="4194304" selected>每次 4 MiB</option>
+        <option value="16777216">每次 16 MiB</option>
+      </select>
+      <button id="fileStart" disabled>開始</button>
+    </div>
+    <p class="status" id="fileStatus"></p>
+
+    <h2>e. Service Worker 串流下載</h2>
+    <p class="note">按下後瀏覽器應該問要不要下載。下載期間這一頁要留著。下載完,回到上面的 f 選剛下載的檔案,頁面會比對內容對不對。</p>
+    <div class="row">
+      <select id="dlSize" aria-label="下載大小">
+        <option value="268435456">256 MiB</option>
+        <option value="1073741824">1 GiB</option>
+        <option value="2147483648">2 GiB</option>
+        <option value="5368709120">5 GiB</option>
+      </select>
+      <select id="dlMode" aria-label="資料來源">
+        <option value="page">資料由頁面供應(正式設計)</option>
+        <option value="sw">資料由 Service Worker 自己產生</option>
+      </select>
+      <a class="button" id="dlLink" href="#">下載</a>
+    </div>
+    <p class="status" id="dlStatus"></p>
+
+    <h2>g. 本機分段寫入(電腦的 Chrome / Edge)</h2>
+    <div class="row">
+      <select id="writeSize" aria-label="寫入大小">
+        <option value="268435456">256 MiB</option>
+        <option value="1073741824">1 GiB</option>
+        <option value="5368709120">5 GiB</option>
+      </select>
+      <button id="writeFolder">選資料夾並寫入</button>
+      <button id="writeOpfs">寫入瀏覽器內部儲存空間</button>
+    </div>
+    <p class="status" id="writeStatus"></p>
+
+    <h2>測試紀錄</h2>
+    <div class="row">
+      <button id="copyLog">複製測試紀錄</button>
+      <button id="clearLog">清除</button>
+    </div>
+    <div id="log" role="log"></div>
+
+    <script src="sha256.js"></script>
+    <script src="gen.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

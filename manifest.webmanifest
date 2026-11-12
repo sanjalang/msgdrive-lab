@@ -1,0 +1,9 @@
+{
+  "name": "MsgDrive L0 大檔案實驗",
+  "short_name": "L0 大檔案",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1c1c1e",
+  "theme_color": "#1c1c1e"
+}
