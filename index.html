@@ -136,7 +136,9 @@
     <p><strong>做法 B:隱藏的框架</strong>(同一個下載網址,但這一頁不會離開)</p>
     <div class="row">
       <button id="dlFrame">B. 用隱藏框架下載</button>
+      <button id="dlTapped" disabled>我剛按了「下載」</button>
     </div>
+    <p class="note">按 B 之後,瀏覽器會問「要下載嗎」。在那個詢問上按了「下載」之後,請馬上回來按「我剛按了『下載』」,紀錄才知道你是什麼時候按的。</p>
     <p class="status" id="dlStatus"></p>
     <p><strong>做法 C:先存到瀏覽器內部儲存空間,再交給系統</strong>(不經過 Service Worker;大小用上面選的)</p>
     <p class="note">第 1 步寫完後,2a 與 2b 各試一次:看能不能存到「檔案」、大小對不對。這個做法會暫時佔用兩份空間,試完按第 3 步刪除。</p>

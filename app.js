@@ -372,9 +372,19 @@ setUpServiceWorker();
 
 // Method B: the same download URL in a hidden frame, so this page is never navigated away
 let downloadFrame = null;
+// The page cannot see the browser's own "download?" prompt, so the person marks the moment by hand: what the browser
+// reads before that moment has nowhere to go but memory
+let frameStartedAt = null;
+$('dlTapped').addEventListener('click', () => {
+  if (frameStartedAt === null) return;
+  log(`e.user confirmed-download sinceFrame=${seconds(performance.now() - frameStartedAt)}`);
+  $('dlTapped').disabled = true;
+});
 $('dlFrame').addEventListener('click', () => {
   refreshDownloadLink();
   const url = $('dlLink').href;
+  frameStartedAt = performance.now();
+  $('dlTapped').disabled = false;
   log(`e.frame size=${$('dlSize').value} mode=${$('dlMode').value} pace=${$('dlPace').value}`);
   if (downloadFrame !== null) downloadFrame.remove();
   downloadFrame = document.createElement('iframe');
