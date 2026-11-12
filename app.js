@@ -483,21 +483,57 @@ $('stageLink').addEventListener('click', (event) => {
   log(`e.stage link click size=${stagedFile.size}`);
 });
 
+/** Everything at the top of the origin private file system. Only this page's own files (`l0-…`) are ever named or removed. */
+async function listStaged(directory) {
+  const entries = [];
+  for await (const [name, handle] of directory.entries()) {
+    let size = null;
+    if (handle.kind === 'file') {
+      try {
+        size = (await handle.getFile()).size;
+      } catch {
+        size = null;
+      }
+    }
+    entries.push({ name, kind: handle.kind, size, own: name.startsWith('l0-') });
+  }
+  return entries;
+}
+
+async function logStorage(directory, label) {
+  const entries = await listStaged(directory);
+  let total = 0;
+  for (const entry of entries) {
+    total += entry.size ?? 0;
+    log(`e.stage entry kind=${entry.kind} size=${entry.size === null ? '?' : mib(entry.size)} name=${entry.own ? entry.name : '(not from this page)'}`);
+  }
+  const estimate = await navigator.storage.estimate();
+  log(`e.stage ${label} entries=${entries.length} total=${mib(total)} usage=${mib(estimate.usage ?? 0)} quota=${mib(estimate.quota ?? 0)}`);
+  return { count: entries.length, total, usage: estimate.usage ?? 0 };
+}
+
+action('stageList', 'stageStatus', async () => {
+  const directory = await navigator.storage.getDirectory();
+  const found = await logStorage(directory, 'list');
+  status('stageStatus', `內部儲存空間裡有 ${found.count} 個項目,共 ${mib(found.total)};瀏覽器回報這個網站已用 ${mib(found.usage)}`);
+});
+
 action('stageRemove', 'stageStatus', async () => {
   clearStaged();
   const directory = await navigator.storage.getDirectory();
   let removed = 0;
-  for (const option of $('dlSize').options) {
+  for (const entry of await listStaged(directory)) {
+    if (!entry.own) continue;
     try {
-      await directory.removeEntry(`l0-dl-${option.value}.bin`);
+      await directory.removeEntry(entry.name, { recursive: true });
       removed++;
-    } catch {
-      // Not there: nothing to remove
+    } catch (error) {
+      log(`e.stage remove failed: ${describeError(error)}`);
     }
   }
-  const estimate = await navigator.storage.estimate();
-  log(`e.stage removed files=${removed} usage=${mib(estimate.usage ?? 0)}`);
-  status('stageStatus', `已刪除 ${removed} 個暫存檔`);
+  log(`e.stage removed files=${removed}`);
+  const left = await logStorage(directory, 'after-remove');
+  status('stageStatus', `已刪除 ${removed} 個暫存檔;剩下 ${left.count} 個項目,瀏覽器回報這個網站已用 ${mib(left.usage)}`);
 });
 
 // ───────────────────────── g. Piece-by-piece writes to a local folder ─────────────────────────
