@@ -37,13 +37,13 @@ async function askPage(clientId, start, end) {
   });
 }
 
-function download(event, token, size, mode) {
+function download(event, token, size, mode, paceMibPerSecond) {
   let position = 0;
   let nextReport = REPORT_EVERY;
   // Set when the browser stops reading: a piece that was being fetched then must not be enqueued any more
   let cancelled = false;
   const startedAt = Date.now();
-  const report = (state, extra) => tellPages({ type: 'dl', token, state, position, size, mode, elapsedMs: Date.now() - startedAt, ...extra });
+  const report = (state, extra) => tellPages({ type: 'dl', token, state, position, size, mode, pace: paceMibPerSecond, elapsedMs: Date.now() - startedAt, ...extra });
   const body = new ReadableStream({
     start() {
       report('start', {
@@ -66,6 +66,12 @@ function download(event, token, size, mode) {
         if (bytes.length !== end - position) throw new Error(`piece of ${bytes.length} bytes, expected ${end - position}`);
         controller.enqueue(bytes);
         position = end;
+        if (paceMibPerSecond > 0) {
+          // Hold the next piece back until the average rate is down to the pace
+          const dueMs = (position / 1048576 / paceMibPerSecond) * 1000;
+          const waitMs = dueMs - (Date.now() - startedAt);
+          if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
         if (position >= nextReport) {
           nextReport = position + REPORT_EVERY;
           report('progress');
@@ -104,5 +110,6 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(new Response('bad request', { status: 400, headers: { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff' } }));
     return;
   }
-  event.respondWith(download(event, token, size, mode));
+  const pace = Number(url.searchParams.get('pace'));
+  event.respondWith(download(event, token, size, mode, Number.isFinite(pace) && pace > 0 ? pace : 0));
 });

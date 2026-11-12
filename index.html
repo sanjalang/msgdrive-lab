@@ -122,6 +122,11 @@
         <option value="page">資料由頁面供應(正式設計)</option>
         <option value="sw">資料由 Service Worker 自己產生</option>
       </select>
+      <select id="dlPace" aria-label="供應速度">
+        <option value="0">速度不限</option>
+        <option value="32">限速每秒 32 MiB</option>
+        <option value="8">限速每秒 8 MiB</option>
+      </select>
     </div>
     <p><strong>做法 A:連結</strong>(整頁前往下載網址)</p>
     <p class="note">主畫面 App 不要按這個:2026-11-12 實測會離開這一頁而且回不來,下載也沒有開始。只在 Safari 裡試。</p>

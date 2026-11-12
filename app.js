@@ -10,15 +10,49 @@ const $ = (id) => document.getElementById(id);
 
 // ───────────────────────── Log ─────────────────────────
 
+// The log is also kept in localStorage: when the system throws the page away in the middle of a test (out of memory), the
+// lines written so far are still there after the reload, shown above the new ones. Only this test page's own log is stored.
+const LOG_KEY = 'l0.site3.log';
+const LOG_KEEP_LINES = 400;
+
+function loadPreviousLog() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOG_KEY) ?? '[]');
+    return Array.isArray(saved) ? saved.filter((line) => typeof line === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+const previousLines = loadPreviousLog();
 const lines = [];
 const pageStart = performance.now();
+
+function saveLog() {
+  try {
+    localStorage.setItem(LOG_KEY, JSON.stringify([...previousLines, ...lines].slice(-LOG_KEEP_LINES)));
+  } catch {
+    // Storage is full or unavailable: the log on screen still works
+  }
+}
+
+function showLine(line) {
+  const box = $('log');
+  box.append(document.createTextNode(`${line}\n`));
+  box.scrollTop = box.scrollHeight;
+}
 
 function log(text) {
   const line = `[${((performance.now() - pageStart) / 1000).toFixed(1).padStart(7)}s] ${text}`;
   lines.push(line);
-  const box = $('log');
-  box.append(document.createTextNode(`${line}\n`));
-  box.scrollTop = box.scrollHeight;
+  showLine(line);
+  saveLog();
+}
+
+if (previousLines.length > 0) {
+  for (const line of previousLines) showLine(line);
+  previousLines.push('======== the page was loaded again here ========');
+  showLine(previousLines[previousLines.length - 1]);
 }
 
 function status(id, text) {
@@ -258,7 +292,7 @@ function newToken() {
 }
 
 function refreshDownloadLink() {
-  $('dlLink').href = `dl/${newToken()}?size=${$('dlSize').value}&mode=${$('dlMode').value}`;
+  $('dlLink').href = `dl/${newToken()}?size=${$('dlSize').value}&mode=${$('dlMode').value}&pace=${$('dlPace').value}`;
 }
 
 const downloads = new Map();
@@ -275,19 +309,19 @@ function onWorkerMessage(event) {
     return;
   }
   if (data.type !== 'dl') return;
-  const seen = downloads.get(data.token) ?? { nextLog: 256 * MIB };
+  const seen = downloads.get(data.token) ?? { nextLog: 64 * MIB };
   downloads.set(data.token, seen);
   const where = `${mib(data.position)} / ${mib(data.size)}`;
   if (data.state === 'start') {
     log(
-      `e.start token=${data.token} mode=${data.mode} size=${data.size} hasClientId=${data.clientId !== ''} hasResultingClientId=${data.resultingClientId !== ''} ` +
+      `e.start token=${data.token} mode=${data.mode} size=${data.size} hasClientId=${data.clientId !== ''} hasResultingClientId=${data.resultingClientId !== ''} pace=${data.pace} ` +
         `destination=${data.destination} requestMode=${data.requestMode}`,
     );
     status('dlStatus', `開始:${mib(data.size)}`);
   } else if (data.state === 'progress') {
     status('dlStatus', `瀏覽器已讀取 ${where},${rate(data.position, data.elapsedMs)}`);
     if (data.position >= seen.nextLog) {
-      seen.nextLog += 256 * MIB;
+      seen.nextLog = data.position + 64 * MIB;
       log(`e.progress token=${data.token} pulled=${where} elapsed=${seconds(data.elapsedMs)} (${rate(data.position, data.elapsedMs)})${heap()}`);
     }
   } else {
@@ -323,8 +357,9 @@ async function setUpServiceWorker() {
 
 $('dlSize').addEventListener('change', refreshDownloadLink);
 $('dlMode').addEventListener('change', refreshDownloadLink);
+$('dlPace').addEventListener('change', refreshDownloadLink);
 $('dlLink').addEventListener('click', () => {
-  log(`e.click size=${$('dlSize').value} mode=${$('dlMode').value} visibility=${document.visibilityState}`);
+  log(`e.click size=${$('dlSize').value} mode=${$('dlMode').value} pace=${$('dlPace').value} visibility=${document.visibilityState}`);
   // A fresh token for the next download, once this navigation has started
   setTimeout(refreshDownloadLink, 1000);
 });
@@ -340,7 +375,7 @@ let downloadFrame = null;
 $('dlFrame').addEventListener('click', () => {
   refreshDownloadLink();
   const url = $('dlLink').href;
-  log(`e.frame size=${$('dlSize').value} mode=${$('dlMode').value}`);
+  log(`e.frame size=${$('dlSize').value} mode=${$('dlMode').value} pace=${$('dlPace').value}`);
   if (downloadFrame !== null) downloadFrame.remove();
   downloadFrame = document.createElement('iframe');
   downloadFrame.hidden = true;
@@ -525,7 +560,7 @@ action('writeOpfs', 'writeStatus', async () => {
 // ───────────────────────── Copy the log ─────────────────────────
 
 $('copyLog').addEventListener('click', async () => {
-  const text = lines.join('\n');
+  const text = [...previousLines, ...lines].join('\n');
   try {
     await navigator.clipboard.writeText(text);
     $('copyLog').textContent = '已複製';
@@ -545,5 +580,7 @@ $('copyLog').addEventListener('click', async () => {
 
 $('clearLog').addEventListener('click', () => {
   lines.length = 0;
+  previousLines.length = 0;
   $('log').textContent = '';
+  saveLog();
 });
