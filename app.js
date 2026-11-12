@@ -439,16 +439,23 @@ action('stageWrite', 'stageStatus', async () => {
   const beforeClose = performance.now();
   await writable.close();
   const closeMs = performance.now() - beforeClose;
+  // Each step after the last write is timed on its own: on an iPhone 16 s passed here for 1 GiB, and the log did not say where
+  const beforeGetFile = performance.now();
   const onDisk = await handle.getFile();
+  const getFileMs = performance.now() - beforeGetFile;
+  const beforeWrap = performance.now();
   // Wrapping does not copy: the new File refers to the one on disk
   stagedFile = new File([onDisk], name, { type: 'application/octet-stream' });
   stagedUrl = URL.createObjectURL(stagedFile);
   $('stageLink').href = stagedUrl;
   $('stageLink').download = name;
   $('stageLink').removeAttribute('aria-disabled');
+  const wrapMs = performance.now() - beforeWrap;
+  const beforeCanShare = performance.now();
   const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [stagedFile] });
+  const canShareMs = performance.now() - beforeCanShare;
   $('stageShare').disabled = !canShare;
-  log(`e.stage written size=${onDisk.size} sizeOk=${onDisk.size === size} write=${seconds(writeMs)} (${rate(size, writeMs)}) close=${seconds(closeMs)} canShareFiles=${canShare}`);
+  log(`e.stage written size=${onDisk.size} sizeOk=${onDisk.size === size} write=${seconds(writeMs)} (${rate(size, writeMs)}) close=${seconds(closeMs)} getFile=${seconds(getFileMs)} wrap=${seconds(wrapMs)} canShare=${seconds(canShareMs)} canShareFiles=${canShare}`);
   status('stageStatus', `已寫入 ${mib(size)}(${seconds(writeMs)})。接著按「分享 / 儲存到檔案」或「用下載連結儲存」`);
 });
 
