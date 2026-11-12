@@ -143,6 +143,12 @@
     <p><strong>做法 C:先存到瀏覽器內部儲存空間,再交給系統</strong>(不經過 Service Worker;大小用上面選的)</p>
     <p class="note">第 1 步寫完後,2a 與 2b 各試一次:看能不能存到「檔案」、大小對不對。這個做法會暫時佔用兩份空間,試完按第 3 步刪除。</p>
     <div class="row">
+      <select id="stageMethod" aria-label="寫入方式">
+        <option value="worker">寫入方式:Worker 同步寫入(新)</option>
+        <option value="writable">寫入方式:可寫串流(舊)</option>
+      </select>
+    </div>
+    <div class="row">
       <button id="stageWrite">C1. 產生並寫入</button>
       <button id="stageShare" disabled>C2a. 分享 / 儲存到檔案</button>
       <a class="button" id="stageLink" aria-disabled="true">C2b. 用下載連結儲存</a>

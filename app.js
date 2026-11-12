@@ -418,37 +418,55 @@ action('stageWrite', 'stageStatus', async () => {
   clearStaged();
   const size = Number($('dlSize').value);
   const name = `l0-dl-${size}.bin`;
+  // 'worker': a synchronous access handle in a worker (charged what it writes on an iPhone); 'writable': a writable stream
+  // on the page (every write is charged the whole file so far there)
+  const method = $('stageMethod').value;
   const estimate = await navigator.storage.estimate();
-  log(`e.stage start size=${size} quota=${mib(estimate.quota ?? 0)} usage=${mib(estimate.usage ?? 0)}`);
+  log(`e.stage start size=${size} method=${method} quota=${mib(estimate.quota ?? 0)} usage=${mib(estimate.usage ?? 0)}`);
   const directory = await navigator.storage.getDirectory();
   const handle = await directory.getFileHandle(name, { create: true });
-  if (typeof handle.createWritable !== 'function') throw new Error('createWritable is not available on this browser');
-  const writable = await handle.createWritable();
   const started = performance.now();
   let writeMs = 0;
-  let nextLog = 256 * MIB;
-  try {
-    for (let position = 0; position < size; ) {
-      const end = Math.min(size, position + PIECE);
-      const bytes = gen.range(position, end);
-      const before = performance.now();
-      await writable.write(bytes);
-      writeMs += performance.now() - before;
-      position = end;
-      status('stageStatus', `寫入 ${mib(position)} / ${mib(size)}`);
-      if (position >= nextLog) {
-        nextLog += 256 * MIB;
-        log(`e.stage at=${mib(position)} elapsed=${seconds(performance.now() - started)} write=${seconds(writeMs)}${heap()}`);
-      }
+  let closeMs = 0;
+  if (method === 'worker') {
+    try {
+      const result = await writeInWorker(name, size, PIECE, (progress) => {
+        status('stageStatus', `寫入 ${mib(progress.position)} / ${mib(size)}`);
+        log(`e.stage at=${mib(progress.position)} elapsed=${seconds(performance.now() - started)} write=${seconds(progress.writeMs)}`);
+      });
+      writeMs = result.writeMs;
+      closeMs = result.closeMs;
+    } catch (error) {
+      await directory.removeEntry(name).catch(() => undefined);
+      throw error;
     }
-  } catch (error) {
-    await writable.abort().catch(() => undefined);
-    await directory.removeEntry(name).catch(() => undefined);
-    throw error;
+  } else {
+    if (typeof handle.createWritable !== 'function') throw new Error('createWritable is not available on this browser');
+    const writable = await handle.createWritable();
+    let nextLog = 256 * MIB;
+    try {
+      for (let position = 0; position < size; ) {
+        const end = Math.min(size, position + PIECE);
+        const bytes = gen.range(position, end);
+        const before = performance.now();
+        await writable.write(bytes);
+        writeMs += performance.now() - before;
+        position = end;
+        status('stageStatus', `寫入 ${mib(position)} / ${mib(size)}`);
+        if (position >= nextLog) {
+          nextLog += 256 * MIB;
+          log(`e.stage at=${mib(position)} elapsed=${seconds(performance.now() - started)} write=${seconds(writeMs)}${heap()}`);
+        }
+      }
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      await directory.removeEntry(name).catch(() => undefined);
+      throw error;
+    }
+    const beforeClose = performance.now();
+    await writable.close();
+    closeMs = performance.now() - beforeClose;
   }
-  const beforeClose = performance.now();
-  await writable.close();
-  const closeMs = performance.now() - beforeClose;
   // Each step after the last write is timed on its own: on an iPhone 16 s passed here for 1 GiB, and the log did not say where
   const beforeGetFile = performance.now();
   const onDisk = await handle.getFile();
@@ -573,19 +591,23 @@ async function writeThroughWritable(handle, size, piece, truncateFirst) {
   await writable.close();
 }
 
-function writeInWorker(name, size, piece) {
+function writeInWorker(name, size, piece, onProgress) {
   return new Promise((resolve, reject) => {
     const worker = new Worker('stage-worker.js');
     worker.onmessage = (event) => {
+      if (event.data.progress) {
+        if (onProgress) onProgress(event.data);
+        return;
+      }
       worker.terminate();
-      if (event.data.ok) resolve();
+      if (event.data.ok) resolve(event.data);
       else reject(new Error(event.data.message));
     };
     worker.onerror = (event) => {
       worker.terminate();
       reject(new Error(event.message || 'the worker failed to start'));
     };
-    worker.postMessage({ name, size, piece });
+    worker.postMessage({ name, size, piece, reportEvery: onProgress ? 256 * MIB : 0 });
   });
 }
 
